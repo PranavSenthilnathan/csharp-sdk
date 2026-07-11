@@ -36,6 +36,17 @@ McpClientOptions options = new()
     },
 };
 
+// The default client now prefers the 2026-07-28 protocol (probing with server/discover and
+// falling back to a legacy initialize handshake). The "initialize" and "sse-retry" scenarios
+// specifically exercise the legacy initialize handshake and SSE resumability (removed in the
+// 2026-07-28 protocol) and strictly expect initialize as the first message, so pin them to the
+// latest stable version. Other scenarios run on the 2026-07-28 default and exercise the
+// server/discover probe plus the transparent legacy fallback.
+if (scenario is "initialize" or "sse-retry")
+{
+    options.ProtocolVersion = "2025-11-25";
+}
+
 var consoleLoggerFactory = LoggerFactory.Create(builder =>
 {
     builder.AddConsole();
@@ -176,6 +187,136 @@ try
             catch (Exception ex)
             {
                 Console.WriteLine($"Expected auth failure: {ex.Message}");
+            }
+            break;
+        }
+        case "http-standard-headers":
+        {
+            // List and call tools to test Mcp-Method and Mcp-Name headers
+            var tools = await mcpClient.ListToolsAsync();
+            Console.WriteLine($"Available tools: {string.Join(", ", tools.Select(t => t.Name))}");
+
+            var tool = tools.FirstOrDefault(t => t.Name == "test_headers");
+            if (tool is not null)
+            {
+                Console.WriteLine("Calling tool: test_headers");
+                var result = await mcpClient.CallToolAsync(toolName: "test_headers", arguments: new Dictionary<string, object?>());
+                success &= !(result.IsError == true);
+            }
+
+            // List and get prompts to test Mcp-Method and Mcp-Name headers
+            var prompts = await mcpClient.ListPromptsAsync();
+            Console.WriteLine($"Available prompts: {string.Join(", ", prompts.Select(p => p.Name))}");
+
+            foreach (var prompt in prompts)
+            {
+                Console.WriteLine($"Getting prompt: {prompt.Name}");
+                try
+                {
+                    await mcpClient.GetPromptAsync(prompt.Name);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Prompt get error (expected for test): {ex.Message}");
+                }
+            }
+
+            // List and read resources to test Mcp-Name with params.uri
+            var resources = await mcpClient.ListResourcesAsync();
+            Console.WriteLine($"Available resources: {string.Join(", ", resources.Select(r => r.Uri))}");
+
+            foreach (var resource in resources)
+            {
+                Console.WriteLine($"Reading resource: {resource.Uri}");
+                try
+                {
+                    await mcpClient.ReadResourceAsync(resource.Uri);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Resource read error (expected for test): {ex.Message}");
+                }
+            }
+            break;
+        }
+        case "http-custom-headers":
+        {
+            // List tools to discover x-mcp-header annotations (populates tool cache)
+            var tools = await mcpClient.ListToolsAsync();
+            Console.WriteLine($"Available tools: {string.Join(", ", tools.Select(t => t.Name))}");
+
+            // Parse conformance context for tool calls
+            if (!string.IsNullOrEmpty(conformanceContext))
+            {
+                using var contextDoc = JsonDocument.Parse(conformanceContext);
+
+                // Support both "toolCalls" (array) and legacy "toolCall" (single object)
+                var toolCallElements = new List<JsonElement>();
+                if (contextDoc.RootElement.TryGetProperty("toolCalls", out var toolCallsArray) &&
+                    toolCallsArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in toolCallsArray.EnumerateArray())
+                    {
+                        toolCallElements.Add(item);
+                    }
+                }
+                else if (contextDoc.RootElement.TryGetProperty("toolCall", out var toolCallEl))
+                {
+                    toolCallElements.Add(toolCallEl);
+                }
+
+                foreach (var toolCallEl in toolCallElements)
+                {
+                    var toolName = toolCallEl.TryGetProperty("name", out var nameEl)
+                        ? nameEl.GetString() ?? "test_custom_headers"
+                        : "test_custom_headers";
+
+                    Dictionary<string, object?> toolCallArgs = new();
+                    if (toolCallEl.TryGetProperty("arguments", out var argsEl))
+                    {
+                        foreach (var prop in argsEl.EnumerateObject())
+                        {
+                            object? value = prop.Value.ValueKind switch
+                            {
+                                JsonValueKind.String => prop.Value.GetString(),
+                                JsonValueKind.Number => prop.Value.TryGetInt64(out var l) ? l : prop.Value.GetDouble(),
+                                JsonValueKind.True => true,
+                                JsonValueKind.False => false,
+                                JsonValueKind.Null => null,
+                                _ => prop.Value.GetRawText(),
+                            };
+                            toolCallArgs[prop.Name] = value;
+                        }
+                    }
+
+                    Console.WriteLine($"Calling tool: {toolName} with {toolCallArgs.Count} arguments");
+                    var result = await mcpClient.CallToolAsync(toolName: toolName, arguments: toolCallArgs);
+                    success &= !(result.IsError == true);
+                }
+            }
+            break;
+        }
+        case "http-invalid-tool-headers":
+        {
+            // List tools — the client should filter out tools with invalid x-mcp-header annotations
+            var tools = await mcpClient.ListToolsAsync();
+            Console.WriteLine($"Available tools after filtering: {string.Join(", ", tools.Select(t => t.Name))}");
+
+            // Only call valid_tool — invalid tools should have been excluded
+            var validTool = tools.FirstOrDefault(t => t.Name == "valid_tool");
+            if (validTool is not null)
+            {
+                Console.WriteLine("Calling valid_tool");
+                var result = await mcpClient.CallToolAsync(toolName: "valid_tool", arguments: new Dictionary<string, object?>
+                {
+                    { "region", "us-east1" }
+                });
+                success &= !(result.IsError == true);
+            }
+            else
+            {
+                Console.WriteLine("ERROR: valid_tool was not found in the filtered tool list");
+                success = false;
             }
             break;
         }

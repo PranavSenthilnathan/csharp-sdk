@@ -103,3 +103,43 @@ server.RegisterNotificationHandler(
         Console.WriteLine($"Roots updated. {result.Roots.Count} roots available.");
     });
 ```
+
+### Multi Round-Trip Requests (MRTR)
+
+[MRTR](xref:mrtr) is the SEP-2322 mechanism for server-driven input requests, finalized in protocol revision `2026-07-28`. In that revision, the server-to-client `roots/list` request method is removed; the recommended way to ask the client for its roots from a server handler is to throw <xref:ModelContextProtocol.Protocol.InputRequiredException> and let the SDK emit an <xref:ModelContextProtocol.Protocol.InputRequiredResult> on the wire.
+
+> [!IMPORTANT]
+> `RequestRootsAsync` throws `InvalidOperationException("Roots are not supported in stateless mode.")` whenever the server is running stateless — which includes every Streamable HTTP server under `2026-07-28` once that revision is forced to stateless-only in a future PR. Stdio servers and current-protocol stateful Streamable HTTP servers continue to work via the legacy server-to-client `roots/list` request flow. For code that needs to run on stateless servers — including all `2026-07-28` Streamable HTTP servers going forward — throw `InputRequiredException` from your handler instead. It works under both protocols and both session modes.
+
+For example:
+
+```csharp
+[McpServerTool, Description("Tool that requests roots via MRTR")]
+public static string ListRootsWithMrtr(
+    McpServer server,
+    RequestContext<CallToolRequestParams> context)
+{
+    // On retry, process the client's roots response
+    if (context.Params!.InputResponses?.TryGetValue("get_roots", out var response) is true)
+    {
+        var roots = response.Deserialize(InputResponse.ListRootsResultJsonTypeInfo)?.Roots ?? [];
+        return $"Found {roots.Count} roots: {string.Join(", ", roots.Select(r => r.Uri))}";
+    }
+
+    if (!server.IsMrtrSupported)
+    {
+        return "This tool requires MRTR support (2026-07-28, or a stateful current-protocol session).";
+    }
+
+    // First call — request the client's root list
+    throw new InputRequiredException(
+        inputRequests: new Dictionary<string, InputRequest>
+        {
+            ["get_roots"] = InputRequest.ForRootsList(new ListRootsRequestParams())
+        },
+        requestState: "awaiting-roots");
+}
+```
+
+> [!TIP]
+> See [Multi Round-Trip Requests (MRTR)](xref:mrtr) for the full protocol details, including load shedding, multiple round trips, and the compatibility matrix.

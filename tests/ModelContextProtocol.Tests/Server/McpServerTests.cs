@@ -343,18 +343,13 @@ public class McpServerTests : LoggedTest
             Resources = new ResourcesCapability(),
             Tools = new ToolsCapability(),
             Completions = new CompletionsCapability(),
-            Tasks = new McpTasksCapability(),
             Extensions = new Dictionary<string, object> { ["io.test"] = new JsonObject() },
         };
 
         await Can_Handle_Requests(
             serverCapabilities: inputCapabilities,
             method: RequestMethods.Initialize,
-            configureOptions: options =>
-            {
-                // Tasks capability requires a TaskStore
-                options.TaskStore = new InMemoryMcpTaskStore();
-            },
+            configureOptions: _ => { },
             assertResult: (_, response) =>
             {
                 var result = JsonSerializer.Deserialize<InitializeResult>(response, McpJsonUtilities.DefaultOptions);
@@ -1033,7 +1028,7 @@ public class McpServerTests : LoggedTest
     public async Task Can_Handle_Call_Tool_Requests_With_McpProtocolException_And_Data()
     {
         const string ErrorMessage = "Resource not found";
-        const McpErrorCode ErrorCode = McpErrorCode.ResourceNotFound;
+        const McpErrorCode ErrorCode = McpErrorCode.InvalidParams;
         const string ResourceUri = "file:///path/to/resource";
 
         await using var transport = new TestServerTransport();
@@ -1373,7 +1368,10 @@ public class McpServerTests : LoggedTest
         public override string? NegotiatedProtocolVersion => throw new NotImplementedException();
         public override Implementation? ClientInfo => throw new NotImplementedException();
         public override IServiceProvider? Services => throw new NotImplementedException();
+        // McpServer.LoggingLevel is obsolete (SEP-2577) but abstract, so this test double must override it.
+#pragma warning disable CS0672 // Member overrides obsolete member
         public override LoggingLevel? LoggingLevel => throw new NotImplementedException();
+#pragma warning restore CS0672
         public override Task SendMessageAsync(JsonRpcMessage message, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
         public override Task RunAsync(CancellationToken cancellationToken = default) =>
